@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: studio-mobile-publisher
+    runtime: node
+    plan: free
+    buildCommand: echo "No hay dependencias que instalar"
+    startCommand: node src/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.15.0
+      - key: STUDIO_TOKEN
+        sync: false
+      - key: ENCRYPTION_SECRET
+        generateValue: true
