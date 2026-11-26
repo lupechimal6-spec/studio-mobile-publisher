@@ -215,9 +215,92 @@ async function runPublish(job, body, apiKey) {
   }
 }
 
+// ------------------------------------------------------------------ buscar juegos (APIs públicas de Roblox)
+// El juego no puede llamar a roblox.com con HttpService, así que lo hace este servidor.
+// Solo aparecen los juegos PÚBLICOS; los privados se eligen pegando su enlace.
+
+const gameCache = new Map(); // clave -> { t, data }
+async function publicJson(url) {
+  const hit = gameCache.get(url);
+  if (hit && Date.now() - hit.t < 60 * 1000) return hit.data;
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000), headers: { accept: 'application/json' } });
+  if (!res.ok) {
+    const e = new Error(res.status === 429 ? 'Roblox está ocupado; espera unos segundos.' : `Roblox respondió ${res.status}.`);
+    e.status = 502;
+    throw e;
+  }
+  const data = await res.json();
+  gameCache.set(url, { t: Date.now(), data });
+  if (gameCache.size > 500) gameCache.delete(gameCache.keys().next().value);
+  return data;
+}
+
+function mapGames(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((g) => g && g.id && g.rootPlace && g.rootPlace.id)
+    .map((g) => ({ universeId: String(g.id), placeId: String(g.rootPlace.id), name: String(g.name || 'Sin nombre').slice(0, 80) }));
+}
+
+async function universeInfo(universeId) {
+  const data = await publicJson(`https://games.roblox.com/v1/games?universeIds=${universeId}`);
+  const g = data && Array.isArray(data.data) ? data.data[0] : null;
+  if (!g) return null;
+  return { universeId: String(g.id), placeId: String(g.rootPlaceId), name: String(g.name || '').slice(0, 80) };
+}
+
+async function universeOfPlace(placeId) {
+  const data = await publicJson(`https://apis.roblox.com/universes/v1/places/${placeId}/universe`);
+  return data && data.universeId ? String(data.universeId) : null;
+}
+
 // ------------------------------------------------------------------ rutas
 
 const routes = {
+  // Juegos públicos de un jugador o de un grupo
+  'POST /v1/games': async (body) => {
+    if (!isUserId(body.userId)) return [400, { ok: false, error: 'Usuario no válido.' }];
+    if (!allow('games:' + String(body.userId), 0.5)) return [429, { ok: false, error: 'Espera unos segundos.' }];
+    const url = body.groupId !== undefined && body.groupId !== null
+      ? (isUserId(body.groupId) ? `https://games.roblox.com/v2/groups/${body.groupId}/gamesV2?accessFilter=2&limit=50&sortOrder=Desc` : null)
+      : `https://games.roblox.com/v2/users/${body.userId}/games?accessFilter=2&limit=50&sortOrder=Desc`;
+    if (!url) return [400, { ok: false, error: 'Grupo no válido.' }];
+    const data = await publicJson(url);
+    return [200, { ok: true, games: mapGames(data && data.data) }];
+  },
+
+  // Convierte un enlace o un número en { universeId, placeId, name }
+  'POST /v1/resolve': async (body) => {
+    const text = typeof body.text === 'string' ? body.text.trim().slice(0, 300) : '';
+    if (!text) return [400, { ok: false, error: 'Pega el enlace de tu juego.' }];
+    if (!allow('resolve:' + String(body.userId || 0), 0.5)) return [429, { ok: false, error: 'Espera unos segundos.' }];
+    let m = text.match(/roblox\.com\/(?:[a-z]{2}\/)?games\/(\d{1,17})/i) || text.match(/[?&]placeId=(\d{1,17})/i);
+    if (m) {
+      const universeId = await universeOfPlace(m[1]);
+      if (!universeId) return [404, { ok: false, error: 'No encontré ese juego.' }];
+      const info = await universeInfo(universeId).catch(() => null);
+      return [200, { ok: true, game: { universeId, placeId: m[1], name: (info && info.name) || '' } }];
+    }
+    m = text.match(/experiences\/(\d{1,17})/i) || text.match(/universes\/(\d{1,17})/i);
+    if (m) {
+      const info = await universeInfo(m[1]).catch(() => null);
+      if (!info) return [404, { ok: false, error: 'No pude leer ese juego. Pega mejor el enlace de roblox.com/games/… o el ID del lugar.' }];
+      return [200, { ok: true, game: info }];
+    }
+    m = text.match(/^(\d{1,17})$/);
+    if (m) {
+      // Un número suelto: primero se prueba como ID de lugar, luego como ID de experiencia
+      const universeId = await universeOfPlace(m[1]).catch(() => null);
+      if (universeId) {
+        const info = await universeInfo(universeId).catch(() => null);
+        return [200, { ok: true, game: { universeId, placeId: m[1], name: (info && info.name) || '' } }];
+      }
+      const info = await universeInfo(m[1]).catch(() => null);
+      if (info) return [200, { ok: true, game: info }];
+      return [404, { ok: false, error: 'No encontré ningún juego con ese número.' }];
+    }
+    return [400, { ok: false, error: 'Eso no parece un enlace de Roblox. Copia el enlace de la página de tu juego.' }];
+  },
+
   // Cifra la API key del jugador; el juego guarda el resultado en su DataStore
   'POST /v1/credentials': async (body) => {
     if (!isUserId(body.userId)) return [400, { ok: false, error: 'Usuario no válido.' }];
