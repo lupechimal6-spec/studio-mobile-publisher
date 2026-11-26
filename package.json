@@ -1,0 +1,14 @@
+{
+  "name": "studio-mobile-publisher",
+  "version": "1.0.0",
+  "description": "Servidor que publica proyectos de STUDIO MOBILE (Roblox) en el perfil de cada jugador con Open Cloud.",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "license": "MIT"
+}
